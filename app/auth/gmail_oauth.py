@@ -1,0 +1,50 @@
+"""Gmail OAuth 2.0 credential management."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+
+from app.config import Settings
+from app.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def get_gmail_credentials(settings: Settings) -> Credentials:
+    """
+    Obtain valid Gmail API credentials via OAuth 2.0.
+
+    On first run, opens a browser for user consent and saves the token.
+    On subsequent runs, refreshes the token if expired.
+    """
+    creds: Credentials | None = None
+    token_path = settings.gmail_token_path
+    credentials_path = settings.gmail_credentials_path
+
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(
+            str(token_path), settings.gmail_scopes
+        )
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            logger.info("Refreshing expired Gmail OAuth token...")
+            creds.refresh(Request())
+        else:
+            logger.info(
+                "Starting Gmail OAuth flow. A browser window will open for authorization."
+            )
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(credentials_path), settings.gmail_scopes
+            )
+            creds = flow.run_local_server(port=0)
+
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        logger.info("Gmail OAuth token saved to %s", token_path)
+
+    return creds
