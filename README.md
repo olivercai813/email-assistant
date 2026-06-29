@@ -64,13 +64,3 @@ Gemini assigns one of four priority levels using explicit rules:
 
 `reply_recommended` is set to `true` only when a human response is genuinely expected or beneficial. The workflow skips draft generation entirely when no reply is needed, saving API quota and keeping the **Needs attention** tab focused on actionable mail.
 
-### Human-in-the-Loop Sending
-
-Every outbound reply goes through a three-step gate:
-
-1. Gemini drafts the reply
-2. You edit the text in the dashboard
-3. You check "I confirm I want to send this reply" and click **Approve & send**
-
-Rejected drafts are marked `reply_rejected` and never sent.
-
