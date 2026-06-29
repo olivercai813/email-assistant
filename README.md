@@ -2,6 +2,8 @@
 
 An AI-powered Gmail inbox assistant that triages unread mail, decides whether each message needs a reply, and drafts responses for you to review before anything is sent. Built with **Google Gemini**, LangGraph, Gmail API, and a Streamlit dashboard.
 
+<img width="1782" height="892" alt="email_assistant" src="https://github.com/user-attachments/assets/8e6aa245-8849-422b-b0e9-95f54140723f" />
+
 ## Features
 
 - **Gmail Inbox Integration**: Authenticates via OAuth 2.0 and fetches unread messages from your inbox
