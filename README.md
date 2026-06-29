@@ -1,57 +1,80 @@
 # Email Assistant
 
-Python app that reads unread Gmail messages, runs them through a LangGraph workflow with your choice of LLM, and stores structured results in SQLite. A Streamlit dashboard lets you review summaries, edit draft replies, and send mail only after you confirm.
+An AI-powered Gmail inbox assistant that triages unread mail, decides whether each message needs a reply, and drafts responses for you to review before anything is sent. Built with **Google Gemini**, LangGraph, and a Streamlit dashboard.
 
-Replies are never sent automatically.
+## Features
 
-## What it does
+- **Gmail Inbox Integration**: Authenticates via OAuth 2.0 and fetches unread messages from your inbox
+- **AI-Powered Triage**: Uses **Gemini** to analyze each email and assign a priority, summary, action items, and deadlines
+- **Smart Reply Detection**: Determines whether a human reply is genuinely expected or beneficial — drafts are only generated when needed
+- **Draft Reply Generation**: Gemini writes a polished reply you can edit, approve, or reject in the dashboard
+- **Human-in-the-Loop Sending**: Nothing is sent automatically; outbound mail requires an explicit confirmation checkbox
+- **Gmail Label Sync**: Applies priority labels (`AI-High`, `AI-Medium`, `AI-Low`, `AI-Newsletter`) directly in Gmail
+- **Interactive Review Dashboard**: Streamlit UI with search, filters, metrics, and tabbed views for triage and bulk review
+- **Detailed Email Tracking**:
+  - Priority classification (High, Medium, Low, Newsletter)
+  - One-line summaries and extracted action items
+  - Deadline detection from email body text
+  - Reply status lifecycle (pending → approved/rejected → sent)
+  - Processing history with skip logic for already-analyzed messages
 
-- Authenticates with Gmail (OAuth 2.0)
-- Fetches unread inbox messages
-- For each message: priority, summary, action items, deadlines, optional draft reply
-- Applies Gmail labels: `AI-High`, `AI-Medium`, `AI-Low`, `AI-Newsletter`
-- Skips messages already in the local database
-- Dashboard: search, filter, approve/reject/send
+## Tech Stack
 
-**LLM providers:** Gemini (AI Studio), OpenAI, Anthropic, Grok (xAI)
+### Application
+- **Python 3.12+** — Core runtime
+- **Streamlit** — Review dashboard and approval UI
+- **Pandas** — Table view and data display
 
-## Architecture
+### AI & Workflow
+- **Google Gemini** (`gemini-2.5-flash`) — Email analysis and draft reply generation via Google AI Studio
+- **LangGraph** — Stateful workflow orchestration (analyze → conditional reply → finalize)
+- **LangChain** — LLM abstraction and structured JSON invocation
+- **Pydantic** — Configuration and data validation
+
+### Integrations
+- **Gmail API** — Message fetch, labeling, and reply sending
+- **Google OAuth 2.0** — Secure desktop authentication flow
+
+### Data & Storage
+- **SQLite** — Local persistence for processed emails, analysis results, and reply status
+- **python-dotenv** — Environment-based configuration
+
+## How It Works
 
 ```
-Gmail API  →  LangGraph workflow  →  SQLite
-                    ↓
-              LLM provider
-                    ↓
-           Streamlit dashboard
+Gmail → Gemini analysis → draft (if needed) → dashboard review → send (with your approval)
 ```
 
-Workflow: `analyze_email` → (if reply needed) `generate_reply` → `finalize`
+Unread emails are fetched from Gmail, analyzed by Gemini, and saved locally with priority labels. If a reply is recommended, Gemini drafts one for you to review in the Streamlit dashboard. Nothing is sent until you approve it.
 
-## Project layout
+## Key Features Explained
 
-```
-email-assistant/
-├── app/
-│   ├── main.py                 # Processing entry point
-│   ├── config.py
-│   ├── auth/gmail_oauth.py
-│   ├── gmail/client.py
-│   ├── database/
-│   ├── llm/interface.py
-│   ├── prompts/templates.py
-│   ├── workflow/
-│   └── dashboard/streamlit_app.py
-├── credentials/                # credentials.json, token.json (gitignored)
-├── data/                       # SQLite DB (gitignored)
-├── run.py                      # CLI processor
-├── run_dashboard.py
-├── requirements.txt
-└── .env.example
-```
+### Priority Classification
 
-## Setup
+Gemini assigns one of four priority levels using explicit rules:
 
-**Requirements:** Python 3.12+, Google account, LLM API key
+- **High** — Forms to complete, school/academic mail, deadlines, urgent requests
+- **Medium** — Follow-ups, scheduling, account tasks requiring a response
+- **Low** — FYI messages, confirmations, receipts, service notifications
+- **Newsletter** — Mass marketing and editorial digests only (not transactional account mail)
+
+### Reply Recommendation
+
+`reply_recommended` is set to `true` only when a human response is genuinely expected or beneficial. The workflow skips draft generation entirely when no reply is needed, saving API quota and keeping the **Needs attention** tab focused on actionable mail.
+
+### Human-in-the-Loop Sending
+
+Every outbound reply goes through a three-step gate:
+
+1. Gemini drafts the reply
+2. You edit the text in the dashboard
+3. You check "I confirm I want to send this reply" and click **Approve & send**
+
+Rejected drafts are marked `reply_rejected` and never sent.
+
+## Getting Started
+
+**Requirements:** Python 3.12+, Google account, [Gemini API key](https://aistudio.google.com/apikey), Gmail OAuth credentials
 
 ```bash
 git clone https://github.com/your-username/email-assistant.git
@@ -64,26 +87,10 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
-cp .env.example .env   # then edit with your keys
+cp .env.example .env
 ```
 
-### Gmail OAuth
-
-1. [Google Cloud Console](https://console.cloud.google.com/) → new project
-2. Enable **Gmail API**
-3. **OAuth consent screen** → External → add your Gmail as a test user
-4. **Credentials** → OAuth client ID → **Desktop app** → download JSON
-5. Save as `credentials/credentials.json`
-
-On Windows, if the file downloads as `credentials.json.json`, rename it.
-
-First run opens a browser for sign-in and writes `credentials/token.json`. Delete that file to re-authenticate.
-
-### LLM keys
-
-Set `LLM_PROVIDER` and the matching key in `.env`.
-
-**Gemini** (default in `.env.example`):
+Add your Gemini key to `.env`:
 
 ```env
 LLM_PROVIDER=gemini
@@ -91,77 +98,31 @@ GEMINI_API_KEY=your-key-here
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
-Get a key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). New keys use an `AQ.` prefix; older keys use `AIza`. `GOOGLE_API_KEY` works as an alias.
+### Gmail OAuth
 
-Free tier has tight limits (~5 requests/minute, ~20/day for `gemini-2.5-flash`). Use `MAX_EMAILS_PER_RUN=5` for large inboxes. Avoid `gemini-2.0-flash` on free tier (quota is often zero). GCP trial credits do not pay for AI Studio usage.
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the **Gmail API**
+3. Configure the **OAuth consent screen** (External) and add your Gmail as a test user
+4. Create an OAuth client ID (**Desktop app**) and download the JSON
+5. Save as `credentials/credentials.json`
 
-**OpenAI:**
+On first run, a browser window handles sign-in and writes `credentials/token.json`.
 
-```env
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
-```
-
-**Anthropic:**
-
-```env
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-```
-
-**Grok (xAI):**
-
-```env
-LLM_PROVIDER=grok
-XAI_API_KEY=xai-...
-GROK_MODEL=grok-3-mini
-```
-
-Grok (xAI) is not Groq (`gsk_...` keys). Groq is unsupported.
-
-## Configuration
-
-| Variable | Description | Default |
-|---|---|---|
-| `LLM_PROVIDER` | `openai`, `anthropic`, `grok`, `gemini` | `openai` |
-| `GEMINI_API_KEY` | AI Studio API key | — |
-| `GEMINI_MODEL` | Gemini model | `gemini-2.5-flash` |
-| `OPENAI_API_KEY` | OpenAI API key | — |
-| `OPENAI_MODEL` | OpenAI model | `gpt-4o-mini` |
-| `ANTHROPIC_API_KEY` | Anthropic API key | — |
-| `ANTHROPIC_MODEL` | Anthropic model | `claude-sonnet-4-20250514` |
-| `XAI_API_KEY` | xAI API key | — |
-| `GROK_MODEL` | Grok model | `grok-3-mini` |
-| `GROK_BASE_URL` | xAI base URL | `https://api.x.ai/v1` |
-| `GMAIL_CREDENTIALS_PATH` | OAuth credentials file | `credentials/credentials.json` |
-| `GMAIL_TOKEN_PATH` | Saved OAuth token | `credentials/token.json` |
-| `DATABASE_PATH` | SQLite path | `data/email-assistant.db` |
-| `MAX_EMAILS_PER_RUN` | Emails per run | `20` |
-| `RETRY_ATTEMPTS` | LLM retry count | `3` |
-| `RETRY_DELAY_SECONDS` | Retry backoff (seconds) | `2.0` |
-| `LOG_LEVEL` | Log level | `INFO` |
-
-## Running
-
-**Dashboard** (recommended):
+### Run
 
 ```bash
 python run_dashboard.py
 ```
 
-Open http://localhost:8501. Use the sidebar to process unread mail, filter results, and reset the database to reprocess. Reply actions are under the **Needs attention** tab.
+Open http://localhost:8501. Use the sidebar to process unread emails and review drafts under **Needs attention**.
 
-**CLI:**
+CLI processing (same pipeline, no UI):
 
 ```bash
 python run.py
 ```
 
-Same processor as the dashboard button. Do not run both at once.
-
-Processing can take a while on Gemini free tier due to rate limits. Already-processed messages are skipped until you reset the database.
+Do not run both at once. Lower `MAX_EMAILS_PER_RUN` if you hit Gemini rate limits (429 errors).
 
 ## Troubleshooting
 
@@ -169,19 +130,18 @@ Processing can take a while on Gemini free tier due to rate limits. Already-proc
 |---|---|
 | `credentials.json` not found | Place OAuth JSON in `credentials/` |
 | `redirect_uri_mismatch` | Use a Desktop OAuth client, not Web |
-| `access_denied` | Add your email as OAuth test user |
-| `invalid_grant` | Delete `credentials/token.json`, sign in again |
-| Gemini `API key not valid` | Use an AI Studio key (`AQ.` or `AIza`), not GCP OAuth credentials |
-| Gemini `429 RESOURCE_EXHAUSTED` | Rate limit; wait, lower `MAX_EMAILS_PER_RUN`, retry later |
-| Stale errors in dashboard | Reset database in sidebar, or delete `data/email-assistant.db` |
-| `'app' is not a package` | Run `python run_dashboard.py`, not `streamlit run` directly |
-| Database locked | Only one processor at a time |
+| `access_denied` | Add your email as an OAuth test user |
+| `invalid_grant` | Delete `credentials/token.json` and sign in again |
+| Invalid Gemini key | Create a key at [AI Studio](https://aistudio.google.com/apikey) |
+| `429` rate limits | Wait and retry; lower `MAX_EMAILS_PER_RUN` |
+| Stale errors in dashboard | Reset database from the sidebar |
+| `'app' is not a package` | Run `python run_dashboard.py` from the project root |
 
 ## Security
 
 - Do not commit `.env`, `credentials.json`, or `token.json`
-- OAuth tokens stay in `credentials/token.json` locally
-- Sending requires an explicit checkbox in the dashboard
+- OAuth tokens are stored locally in `credentials/token.json`
+- Outbound mail requires explicit dashboard confirmation
 
 ## License
 
