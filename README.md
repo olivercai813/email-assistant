@@ -2,6 +2,9 @@
 
 Personal Gmail assistant that triages inbox mail with a multi-agent AI pipeline, extracts events and deadlines, drafts replies, and syncs results to Gmail labels and Google Calendar — with human approval before anything is sent.
 
+## Demo
+https://drive.google.com/file/d/1y-0OImTnn3uOss1CrPhdiGEgaAU_GK6g/view?usp=sharing
+
 ## Tech Stack
 
 | Layer | Tools |
@@ -57,8 +60,6 @@ flowchart TD
 | **Analyzer** | Classifies priority, summarizes, extracts action items, events, deadlines, and structured calendar entries; decides if a reply is needed |
 | **Drafter** | Writes a reply draft using analysis context (and reviewer feedback on retries) |
 | **Reviewer** | Validates the draft against the original email; sends issues back to the Drafter or approves |
-
-Deterministic **code guardrails** sit alongside the LLM — e.g. security/login emails are forced to Medium priority with no reply, regardless of model output.
 
 When a reply is recommended, the pipeline makes **1–3+ Gemini calls** per email (analyze + draft + up to 3 review/revise loops). Replies and calendar entries always require explicit user action in the dashboard before sending or creating events.
 
