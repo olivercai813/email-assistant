@@ -62,6 +62,21 @@ Deterministic **code guardrails** sit alongside the LLM — e.g. security/login 
 
 When a reply is recommended, the pipeline makes **1–3+ Gemini calls** per email (analyze + draft + up to 3 review/revise loops). Replies and calendar entries always require explicit user action in the dashboard before sending or creating events.
 
+## Priority Classification
+
+The Analyzer agent classifies each email into one of four priorities — **High**, **Medium**, **Low**, or **Newsletter** — using prompt engineering rather than hardcoded rules alone.
+
+The system prompt in `app/prompts/templates.py` instructs Gemini to return structured JSON and defines how to reason about attention level: what counts as urgent vs. informational, when a date implies a real obligation, and when marketing urgency is just promotional noise. Tie-breaking rules in the prompt handle edge cases (e.g. security alerts are always Medium, not High; promotional countdowns stay Low even with deadlines).
+
+| Priority | Example emails |
+|----------|----------------|
+| **High** | Interview invite requiring a response, assignment due this week, failed payment blocking account access |
+| **Medium** | New sign-in alert, friend asking to meet up, ticket confirmation for an event next month |
+| **Low** | Order receipt, product sale email, optional campus event roundup |
+| **Newsletter** | TLDR digest, Substack article, recurring news roundup |
+
+Classified priorities are synced to Gmail as labels (`AI-High`, `AI-Medium`, etc.) and surfaced in the dashboard for filtering and review.
+
 ## Project Structure
 
 ```
