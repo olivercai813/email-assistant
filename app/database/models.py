@@ -27,6 +27,8 @@ class EmailAnalysis:
     action_items: list[str]
     deadlines: list[str]
     reply_recommended: bool
+    events: list[str] = field(default_factory=list)
+    calendar_items: list[dict[str, Any]] = field(default_factory=list)
     draft_reply: str | None = None
     raw_ai_output: dict[str, Any] = field(default_factory=dict)
 
@@ -46,6 +48,9 @@ class ProcessedEmail:
     summary: str
     action_items: str
     deadlines: str
+    events: str
+    calendar_items: str
+    calendar_added: str
     reply_recommended: bool
     draft_reply: str | None
     processing_status: ProcessingStatus

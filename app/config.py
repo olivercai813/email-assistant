@@ -59,6 +59,7 @@ class Settings:
     gmail_credentials_path: Path
     gmail_token_path: Path
     gmail_scopes: list[str]
+    gmail_reply_from_name: str
 
     # Database
     database_path: Path
@@ -111,11 +112,13 @@ def get_settings() -> Settings:
         gmail_token_path=Path(
             os.getenv("GMAIL_TOKEN_PATH", str(CREDENTIALS_DIR / "token.json"))
         ),
+        gmail_reply_from_name=os.getenv("GMAIL_REPLY_FROM_NAME", "Oliver Cai"),
         gmail_scopes=[
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.send",
             "https://www.googleapis.com/auth/gmail.labels",
+            "https://www.googleapis.com/auth/calendar.events",
         ],
         database_path=Path(
             os.getenv("DATABASE_PATH", str(DATA_DIR / "email-assistant.db"))

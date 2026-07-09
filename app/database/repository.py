@@ -10,8 +10,11 @@ from typing import Any, Generator, Optional
 
 from app.database.models import EmailAnalysis, ProcessedEmail, ProcessingStatus
 from app.utils.logging import get_logger
+from app.utils.timezone import format_iso_est, now_est_display
 
 logger = get_logger(__name__)
+
+LAST_PROCESSED_TIME_KEY = "last_processed_time"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS processed_emails (
@@ -26,6 +29,9 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     summary TEXT NOT NULL,
     action_items TEXT NOT NULL DEFAULT '[]',
     deadlines TEXT NOT NULL DEFAULT '[]',
+    events TEXT NOT NULL DEFAULT '[]',
+    calendar_items TEXT NOT NULL DEFAULT '[]',
+    calendar_added TEXT NOT NULL DEFAULT '{}',
     reply_recommended INTEGER NOT NULL DEFAULT 0,
     draft_reply TEXT,
     processing_status TEXT NOT NULL DEFAULT 'processed',
@@ -39,6 +45,11 @@ CREATE INDEX IF NOT EXISTS idx_processed_emails_message_id ON processed_emails(m
 CREATE INDEX IF NOT EXISTS idx_processed_emails_priority ON processed_emails(priority);
 CREATE INDEX IF NOT EXISTS idx_processed_emails_status ON processed_emails(processing_status);
 CREATE INDEX IF NOT EXISTS idx_processed_emails_processed_at ON processed_emails(processed_at);
+
+CREATE TABLE IF NOT EXISTS app_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -53,7 +64,19 @@ class EmailRepository:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_schema(conn)
             conn.commit()
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(processed_emails)")}
+        migrations = {
+            "events": "ALTER TABLE processed_emails ADD COLUMN events TEXT NOT NULL DEFAULT '[]'",
+            "calendar_items": "ALTER TABLE processed_emails ADD COLUMN calendar_items TEXT NOT NULL DEFAULT '[]'",
+            "calendar_added": "ALTER TABLE processed_emails ADD COLUMN calendar_added TEXT NOT NULL DEFAULT '{}'",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                conn.execute(statement)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -65,10 +88,21 @@ class EmailRepository:
             conn.close()
 
     def is_processed(self, message_id: str) -> bool:
+        """
+        Return True if this message should be skipped in future runs.
+
+        NOTE: We intentionally do NOT treat FAILED records as "processed" so that
+        transient issues (e.g. Gemini 429 quota errors) can be retried on later runs.
+        """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT 1 FROM processed_emails WHERE message_id = ?",
-                (message_id,),
+                """
+                SELECT 1
+                FROM processed_emails
+                WHERE message_id = ?
+                  AND processing_status != ?
+                """,
+                (message_id, ProcessingStatus.FAILED.value),
             ).fetchone()
             return row is not None
 
@@ -96,15 +130,18 @@ class EmailRepository:
                 """
                 INSERT INTO processed_emails (
                     message_id, thread_id, subject, sender, recipient, body_preview,
-                    priority, summary, action_items, deadlines, reply_recommended,
+                    priority, summary, action_items, deadlines, events, calendar_items,
+                    calendar_added, reply_recommended,
                     draft_reply, processing_status, ai_raw_output, received_at,
                     processed_at, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     priority = excluded.priority,
                     summary = excluded.summary,
                     action_items = excluded.action_items,
                     deadlines = excluded.deadlines,
+                    events = excluded.events,
+                    calendar_items = excluded.calendar_items,
                     reply_recommended = excluded.reply_recommended,
                     draft_reply = excluded.draft_reply,
                     processing_status = excluded.processing_status,
@@ -123,6 +160,9 @@ class EmailRepository:
                     analysis.summary,
                     json.dumps(analysis.action_items),
                     json.dumps(analysis.deadlines),
+                    json.dumps(analysis.events),
+                    json.dumps(analysis.calendar_items),
+                    "{}",
                     int(analysis.reply_recommended),
                     analysis.draft_reply,
                     status_value,
@@ -141,6 +181,8 @@ class EmailRepository:
             summary="Processing failed",
             action_items=[],
             deadlines=[],
+            events=[],
+            calendar_items=[],
             reply_recommended=False,
         )
         self.save_processed_email(
@@ -246,6 +288,68 @@ class EmailRepository:
             )
             conn.commit()
 
+    def mark_calendar_item_added(
+        self,
+        record_id: int,
+        item_index: int,
+        event_id: str,
+        html_link: str,
+    ) -> None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT calendar_added FROM processed_emails WHERE id = ?",
+                (record_id,),
+            ).fetchone()
+            if not row:
+                return
+            added = json.loads(row["calendar_added"] or "{}")
+            added[str(item_index)] = {"event_id": event_id, "html_link": html_link}
+            conn.execute(
+                "UPDATE processed_emails SET calendar_added = ? WHERE id = ?",
+                (json.dumps(added), record_id),
+            )
+            conn.commit()
+
+    def get_metadata(self, key: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value FROM app_metadata WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_metadata(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_metadata (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+            conn.commit()
+
+    def delete_metadata(self, key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM app_metadata WHERE key = ?", (key,))
+            conn.commit()
+
+    def get_last_processed_time(self) -> str | None:
+        stored = self.get_metadata(LAST_PROCESSED_TIME_KEY)
+        if stored:
+            return stored
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT processed_at FROM processed_emails ORDER BY processed_at DESC LIMIT 1"
+            ).fetchone()
+        if not row or not row["processed_at"]:
+            return None
+        try:
+            return format_iso_est(str(row["processed_at"]))
+        except ValueError:
+            return str(row["processed_at"])
+
+    def set_last_processed_time(self, value: str) -> None:
+        self.set_metadata(LAST_PROCESSED_TIME_KEY, value)
+
     @staticmethod
     def _row_to_model(row: sqlite3.Row) -> ProcessedEmail:
         return ProcessedEmail(
@@ -260,6 +364,9 @@ class EmailRepository:
             summary=row["summary"],
             action_items=row["action_items"] or "[]",
             deadlines=row["deadlines"] or "[]",
+            events=row["events"] or "[]",
+            calendar_items=row["calendar_items"] or "[]",
+            calendar_added=row["calendar_added"] or "{}",
             reply_recommended=bool(row["reply_recommended"]),
             draft_reply=row["draft_reply"],
             processing_status=ProcessingStatus(row["processing_status"]),

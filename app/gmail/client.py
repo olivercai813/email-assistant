@@ -6,7 +6,8 @@ import base64
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
+from email.message import EmailMessage as MimeEmailMessage
+from email.utils import formataddr
 from typing import Any
 
 from google.oauth2.credentials import Credentials
@@ -41,18 +42,61 @@ class GmailClient:
         self._settings = settings
         self._service = build("gmail", "v1", credentials=credentials)
         self._label_cache: dict[str, str] = {}
+        self._user_email: str | None = None
+
+    def _get_user_email(self) -> str:
+        if self._user_email is None:
+            profile = self._service.users().getProfile(userId="me").execute()
+            self._user_email = profile.get("emailAddress", "")
+        return self._user_email
 
     @with_retry(attempts=3, delay=2.0, exceptions=(HttpError,))
+    def list_inbox_messages(
+        self,
+        *,
+        max_results: int | None = None,
+        scan_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List primary inbox messages (read and unread), paginating up to scan_limit."""
+        limit = scan_limit or max_results or self._settings.max_emails_per_run
+        collected: list[dict[str, Any]] = []
+        page_token: str | None = None
+
+        while len(collected) < limit:
+            batch_size = min(100, limit - len(collected))
+            request: dict[str, Any] = {
+                "userId": "me",
+                "q": "in:inbox category:primary",
+                "maxResults": batch_size,
+            }
+            if page_token:
+                request["pageToken"] = page_token
+
+            response = self._service.users().messages().list(**request).execute()
+            collected.extend(response.get("messages", []))
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
+        return collected
+
     def list_unread_messages(self, max_results: int | None = None) -> list[dict[str, Any]]:
-        """List unread message metadata from the inbox."""
-        limit = max_results or self._settings.max_emails_per_run
-        response = (
+        """Backward-compatible alias for list_inbox_messages."""
+        return self.list_inbox_messages(max_results=max_results)
+
+    @with_retry(attempts=3, delay=2.0, exceptions=(HttpError,))
+    def get_message_received_at(self, message_id: str) -> str:
+        """Fetch only the received timestamp for sorting candidates."""
+        raw = (
             self._service.users()
             .messages()
-            .list(userId="me", q="is:unread in:inbox", maxResults=limit)
+            .get(userId="me", id=message_id, format="metadata")
             .execute()
         )
-        return response.get("messages", [])
+        internal_date = raw.get("internalDate", "")
+        if internal_date:
+            return datetime.fromtimestamp(int(internal_date) / 1000, tz=timezone.utc).isoformat()
+        return ""
 
     @with_retry(attempts=3, delay=2.0, exceptions=(HttpError,))
     def get_message(self, message_id: str) -> EmailMessage:
@@ -179,10 +223,15 @@ class GmailClient:
         Returns the sent message ID.
         """
         reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+        normalized_body = self._normalize_outbound_body(body)
 
-        message = MIMEText(body)
+        message = MimeEmailMessage()
+        sender_email = self._get_user_email()
+        if sender_email:
+            message["From"] = formataddr((self._settings.gmail_reply_from_name, sender_email))
         message["to"] = to
         message["subject"] = reply_subject
+        message.set_content(normalized_body, subtype="plain", charset="utf-8")
         if in_reply_to_message_id:
             message["In-Reply-To"] = in_reply_to_message_id
             message["References"] = in_reply_to_message_id
@@ -199,6 +248,20 @@ class GmailClient:
         )
         logger.info("Sent reply in thread %s (message %s)", thread_id, sent.get("id"))
         return sent.get("id", "")
+
+    @staticmethod
+    def _normalize_outbound_body(body: str) -> str:
+        """
+        Normalize line endings before MIME encoding to preserve dashboard formatting.
+
+        Streamlit text areas and stored drafts can contain mixed newline styles.
+        Converting everything to LF first avoids unpredictable visual line breaks in
+        some mail clients after transport normalization.
+        """
+        normalized = body.replace("\r\n", "\n").replace("\r", "\n")
+        # Trim trailing spaces that can render as odd wrapped lines in some clients.
+        normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
+        return normalized
 
     @staticmethod
     def extract_reply_address(sender: str) -> str:
